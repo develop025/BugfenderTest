@@ -1,0 +1,565 @@
+//::::::::::::::::::::::::::::::::::::::::::::::::: COMMON ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+ext.buildConfigField = { flavor, name, value, shouldEncrypt = false ->
+    if (shouldEncrypt) flavor.buildConfigField "String", name, "\"" + encrypt(value) + "\""
+    else flavor.buildConfigField "String", name, "\"" + value + "\""
+}
+
+ext.applyApplicationPlugins = {
+    println("applyApplicationPlugins")
+
+    apply plugin: 'com.android.application'
+    apply plugin: 'kotlin-android'
+    apply plugin: 'kotlin-android-extensions'
+    apply plugin: 'ru.cleverpumpkin.proguard-dictionaries-generator'
+}
+
+ext.applyLibPlugins = {
+    println("applyLibPlugins")
+
+    apply plugin: 'com.android.library'
+    apply plugin: 'kotlin-android'
+    apply plugin: 'kotlin-android-extensions'
+}
+
+ext.applyOneSignal = {
+    if (ENABLE_ONE_SIGNAL) {
+        println("applyOneSignal")
+
+        apply plugin: 'com.onesignal.androidsdk.onesignal-gradle-plugin'
+
+        repositories {
+            maven { url 'https://maven.google.com' }
+        }
+    }
+}
+
+ext.applyConfig = {
+    proguardDictionaries {
+        dictionaryNames = [
+                "build/class-dictionary",
+                "build/package-dictionary",
+                "build/obfuscation-dictionary"
+        ]
+    }
+
+    android {
+        compileSdkVersion 29
+        compileOptions {
+            sourceCompatibility JavaVersion.VERSION_1_8
+            targetCompatibility JavaVersion.VERSION_1_8
+        }
+        kotlinOptions {
+            jvmTarget = JavaVersion.VERSION_1_8
+        }
+
+        defaultConfig {
+            minSdkVersion 19
+            targetSdkVersion 29
+
+            versionCode VERSION
+            versionName "$VERSION.0"
+
+            initDefaultResValues()
+
+            initPlaceholder()
+
+        }
+
+        buildTypes {
+            debug {
+                minifyEnabled ENABLE_DEBUG_MINIFY
+                shrinkResources ENABLE_DEBUG_MINIFY
+
+                initDebugResValues()
+
+                proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+                applicationVariants.all { variant ->
+                    renameAPK(variant, defaultConfig, variant.name)
+                }
+            }
+
+            if (IS_RELEASE) {
+                release {
+
+                    minifyEnabled true
+                    shrinkResources true
+
+                    initReleaseResValues()
+
+                    proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+                    applicationVariants.all { variant ->
+                        renameAPK(variant, defaultConfig, variant.name)
+                    }
+                }
+            }
+        }
+
+        def keyFile = file("../${TASK_NUMBER}_task_${rootProject.name}.jks")
+        def testKeyFile = file("../${DEBUG_KEY_NAME}.jks")
+
+        if (!keyFile.exists()) preBuild.dependsOn createKeystore()
+
+        if (!testKeyFile.exists()) preBuild.dependsOn createTestKeystore()
+
+        signingConfigs {
+            develop {
+                storeFile testKeyFile
+                storePassword "${stripExtension(testKeyFile.getName())}_${PASS_SUFIX.toString()}"
+                keyAlias stripExtension(testKeyFile.getName())
+                keyPassword "${stripExtension(testKeyFile.getName())}_${PASS_SUFIX.toString()}"
+            }
+
+            if (IS_RELEASE) {
+                finalRelease {
+                    storeFile keyFile
+                    storePassword "${stripExtension(keyFile.getName())}_${PASS_SUFIX.toString()}"
+                    keyAlias stripExtension(keyFile.getName())
+                    keyPassword "${stripExtension(keyFile.getName())}_${PASS_SUFIX.toString()}"
+                }
+            }
+        }
+
+        flavorDimensions "version"
+        productFlavors {
+            develop {
+                dimension "version"
+                applicationId DEBUG_APPLICATION_ID
+                signingConfig signingConfigs.develop
+            }
+            if (IS_RELEASE) {
+                finalRelease {
+                    dimension "version"
+                    applicationId APPLICATION_ID
+                    signingConfig signingConfigs.finalRelease
+                }
+            }
+        }
+        variantFilter { variant ->
+            def names = variant.flavors*.name
+            if (BLOCK && (names.contains("finalRelease") || names.contains("develop"))) {
+                setIgnore(true)
+            } else if (!BLOCK && !IS_RELEASE && names.contains("finalRelease")) {
+                setIgnore(true)
+            }
+        }
+    }
+}
+
+ext.applyLibConfig = {
+    println("applyLibConfig")
+    android {
+        compileSdkVersion 29
+        defaultConfig {
+            minSdkVersion 19
+            targetSdkVersion 29
+            versionCode 2
+            versionName "2.01"
+
+
+            testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        }
+
+        compileOptions {
+            sourceCompatibility JavaVersion.VERSION_1_8
+            targetCompatibility JavaVersion.VERSION_1_8
+        }
+        kotlinOptions {
+            jvmTarget = JavaVersion.VERSION_1_8
+        }
+        buildTypes {
+            release {
+                println("lib buildTypes release")
+
+                minifyEnabled true
+                proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            }
+            debug {
+                println("lib buildTypes debug")
+
+                minifyEnabled true
+                proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            }
+        }
+    }
+}
+
+ext.initDefaultResValues = {
+    android {
+        defaultConfig {
+
+        }
+    }
+}
+
+
+ext.initPlaceholder = {
+    def osk = generatorString(getAlphabet(), 9)
+    if (ENABLE_ONE_SIGNAL)
+        osk = ONE_SIGNAL_KEY
+
+    android {
+        defaultConfig {
+            manifestPlaceholders = [
+                    onesignal_app_id               : "${osk}",
+                    // Project number pulled from dashboard, local value is ignored.
+                    onesignal_google_project_number: 'REMOTE'
+            ]
+        }
+    }
+}
+
+ext.initDebugResValues = {
+    android {
+        buildTypes {
+            debug {
+
+                println("initDebugResValues")
+
+                resValue "string", "app_name", "${DEBUG_APPLICATION_NAME}"
+
+                if (ENABLE_UPDATE_DATA) {
+
+                    if (ENABLE_FACEBOOK) {
+                        def fid = generatorString(getAlphabet(), randomInt(5, 15))
+                        println("initDebugResValues facebookId")
+                        resValue "string", "facebookId", "${fid}"
+                        resValue "string", "facebookAuthorities", "com.facebook.app.FacebookContentProvider${fid}"
+                    }
+
+                    buildConfigField(debug, "ENABLE_ONE_SIGNAL", "${ENABLE_ONE_SIGNAL}", false)
+                }
+
+                if (ENABLE_SERVER) {
+                    buildConfigField(debug, "buildConfigServerKey", "${DEBUG_SERVER}", true)
+                    if (ENABLE_GET_REQUEST) {
+                        buildConfigField(debug, "buildConfigGetRequestKey", "${DEBUG_GET_REQUEST}", true)
+                    }
+                }
+                if (ENABLE_ADJUST) {
+//                    buildConfigField(debug, "buildConfigAdjustIdSaveKey", "${generatorString(getAlphabet(), randomInt(5, 15))}", true)
+                    buildConfigField(debug, "buildConfigAdjustTokenKey", "${DEBUG_ADJUST_TOKEN}", true)
+                }
+//                if (ENABLE_REFFERER) {
+//                    buildConfigField(debug, "buildConfigReferrerSaveKey", "${generatorString(getAlphabet(), randomInt(5, 15))}", true)
+//                }
+            }
+        }
+    }
+}
+
+ext.initReleaseResValues = {
+    android {
+        buildTypes {
+            release {
+
+                println("initReleaseResValues")
+
+                resValue "string", "app_name", "${APPLICATION_NAME}"
+
+                if (ENABLE_UPDATE_DATA) {
+
+                    if (ENABLE_FACEBOOK) {
+                        println("initReleaseResValues facebookId")
+                        resValue "string", "facebookId", "${FACEBOOK_APP_ID}"
+                        resValue "string", "facebookAuthorities", "com.facebook.app.FacebookContentProvider${FACEBOOK_APP_ID}"
+                    }
+
+//                    def host = SERVER.replace("https://", "").replace("http://", "")
+//
+//                    resValue "string", "twa_url", SERVER
+//                    resValue "string", "twa_host", host.split("/")[0]0
+
+
+                    buildConfigField(release, "ENABLE_ONE_SIGNAL", "${ENABLE_ONE_SIGNAL}", false)
+
+//                    buildConfigField(release, "GET_REQUEST", "${GET_REQUEST}", true)
+//                    buildConfigField(release, "USER_AGENT_POSTFIX", "${USER_AGENT_POSTFIX}", true)
+                }
+
+                if (ENABLE_SERVER) {
+                    buildConfigField(release, "buildConfigServerKey", "${SERVER}", true)
+                    if (ENABLE_GET_REQUEST) {
+                        buildConfigField(release, "buildConfigGetRequestKey", "${GET_REQUEST}", true)
+                    }
+                }
+                if (ENABLE_ADJUST) {
+//                    buildConfigField(release, "buildConfigAdjustIdSaveKey", "${generatorString(getAlphabet(), randomInt(5, 15))}", true)
+                    buildConfigField(release, "buildConfigAdjustTokenKey", "${ADJUST_TOKEN}", true)
+                }
+//                if (ENABLE_REFFERER) {
+//                    buildConfigField(release, "buildConfigReferrerSaveKey", "${generatorString(getAlphabet(), randomInt(5, 15))}", true)
+//                }
+            }
+        }
+    }
+}
+//::::::::::::::::::::::::::::::::::::::::::::::::: COMMON ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+
+//::::::::::::::::::::::::::::::::::::::::::::::::: DEPENDENCIES ::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+
+ext.applyLibsDependencies = {
+    dependencies {
+        if (USE_AAR && ENABLE_UPDATE_DATA)
+            implementation fileTree(include: ['*.jar', '*.aar'], dir: 'libs')
+        else if (USE_AAR && !ENABLE_UPDATE_DATA)
+            implementation fileTree(include: ['*.jar'], dir: 'libs')
+        else if (!USE_AAR && ENABLE_UPDATE_DATA)
+            implementation project(path: ":${LIB_NAME}")
+    }
+}
+
+ext.applyCommonXDependencies = {
+    dependencies {
+        implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+        implementation 'androidx.appcompat:appcompat:1.1.0'
+        implementation 'androidx.core:core-ktx:1.2.0'
+        implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
+        testImplementation 'junit:junit:4.13'
+        androidTestImplementation 'androidx.test.ext:junit:1.1.1'
+        androidTestImplementation 'androidx.test.espresso:espresso-core:3.2.0'
+    }
+}
+
+ext.applyNavigationDependencies = {
+    dependencies {
+//        def nav_version = "2.3.0-alpha06"
+//
+//        // Java language implementation
+//        implementation "androidx.navigation:navigation-fragment:$nav_version"//require
+//        implementation "androidx.navigation:navigation-ui:$nav_version"
+//
+//        // Kotlin
+//        implementation "androidx.navigation:navigation-fragment-ktx:$nav_version"
+//        implementation "androidx.navigation:navigation-ui-ktx:$nav_version"
+//
+//        // Dynamic Feature Module Support
+//        implementation "androidx.navigation:navigation-dynamic-features-fragment:$nav_version"
+//
+//        // Testing Navigation
+//        androidTestImplementation "androidx.navigation:navigation-testing:$nav_version"
+
+        implementation 'androidx.navigation:navigation-runtime-ktx:2.2.2'
+        implementation 'androidx.navigation:navigation-fragment-ktx:2.2.2'
+    }
+}
+
+ext.applyPreference = {
+    dependencies {
+        implementation 'androidx.preference:preference:1.1.1'
+    }
+}
+
+ext.applyTWADependencies = {
+    dependencies {
+        implementation 'com.google.androidbrowserhelper:androidbrowserhelper:1.2.0'
+    }
+}
+
+ext.applyLogsDependencies = {
+    dependencies {
+        implementation 'com.jakewharton.timber:timber:4.7.1'
+    }
+}
+
+ext.applyFacebookDependencies = {
+    if (ENABLE_FACEBOOK) {
+        dependencies {
+            implementation 'com.facebook.android:facebook-android-sdk:[5,9)'
+        }
+    }
+}
+
+ext.applyAdjustDependencies = {
+    dependencies {
+        implementation 'com.adjust.sdk:adjust-android:4.18.1'
+        implementation 'com.android.installreferrer:installreferrer:1.1.2'
+    }
+}
+
+ext.applyInstallReferrerDependencies = {
+    dependencies {
+        implementation 'com.android.installreferrer:installreferrer:1.1.2'
+    }
+}
+
+ext.applyOneSignalDependencies = {
+    if (ENABLE_ONE_SIGNAL) {
+        dependencies {
+            implementation 'com.onesignal:OneSignal:[3.12.2, 3.99.99]'
+        }
+    }
+}
+
+ext.applyListDependencies = {
+    dependencies {
+        implementation 'androidx.recyclerview:recyclerview:1.1.0'
+    }
+}
+
+ext.applyGlideDependencies = {
+    dependencies {
+        implementation 'com.github.bumptech.glide:glide:4.10.0'
+    }
+}
+
+ext.applyRetrofitDependencies = {
+    dependencies {
+        implementation 'com.squareup.okhttp3:logging-interceptor:4.2.0'
+        implementation 'com.squareup.retrofit2:retrofit:2.6.2'
+        implementation 'com.squareup.retrofit2:converter-gson:2.6.2'
+        implementation 'com.squareup.retrofit2:converter-scalars:2.6.2'
+        implementation 'com.squareup.okhttp3:okhttp:4.2.0'
+    }
+}
+
+ext.applyPagingDependencies = {
+    dependencies {
+        implementation "androidx.paging:paging-runtime:2.1.2"
+    }
+}
+
+ext.applyLiveDataDependencies = {
+    dependencies {
+        implementation 'androidx.lifecycle:lifecycle-extensions:2.2.0'
+        implementation 'androidx.lifecycle:lifecycle-viewmodel:2.2.0'
+    }
+}
+
+ext.applyViewPager2 = {
+    dependencies {
+        implementation 'androidx.viewpager2:viewpager2:1.0.0'
+    }
+}
+
+
+ext.applyKoinDependencies = {
+    ext.koin_version = '2.0.0'
+    dependencies {
+        implementation "org.koin:koin-androidx-scope:$koin_version"
+        implementation "org.koin:koin-androidx-viewmodel:$koin_version"
+    }
+}
+
+
+//::::::::::::::::::::::::::::::::::::::::::::::::: DEPENDENCIES ::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+
+//::::::::::::::::::::::::::::::::::::::::::::::::: METHODS :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+import java.security.MessageDigest
+
+ext.encrypt = { str ->
+    return str.bytes.encodeBase64().toString().bytes.encodeBase64().toString()
+}
+
+ext.generateHash = {
+    MessageDigest.getInstance("MD5").digest(Math.random().toString().bytes).encodeHex().toString().substring(0, 8)
+}
+
+ext.createKeystoreCommand = { rawName ->
+    println("PASS_GENERATE:${rawName}_${PASS_SUFIX}")
+    def command = " keytool -genkey -v -keystore ${rawName}.jks -alias ${rawName} -keypass ${rawName}_${PASS_SUFIX} " +
+            "-storepass ${rawName}_${PASS_SUFIX} -keyalg RSA -keysize 2048 -validity 10000 -dname \"cn=${generateHash()}\" "
+
+    println("keytool command:${command}")
+    return command
+}
+
+ext.createKeystoreCommandWindows = { rawName ->
+    println("PASS_GENERATE:${rawName}_${PASS_SUFIX}")
+    def command = " SET PATH=%PATH%;C:\\Program Files\\Android\\Android Studio\\jre\\bin\n" +
+            " keytool -genkey -v -keystore ${rawName}.jks -alias ${rawName} -keypass ${rawName}_${PASS_SUFIX} " +
+            "-storepass ${rawName}_${PASS_SUFIX} -keyalg RSA -keysize 2048 -validity 10000 -dname \"cn=${generateHash()}\" "
+
+    println("keytool command:${command}")
+    return command
+}
+
+ext.createCommandFileWindows = { name, commandText ->
+    new File("${name}").text = commandText
+}
+
+ext.createKeystore = {
+    task createKeystore(type: Exec) {
+        ignoreExitValue true
+        workingDir '..'
+
+        if (System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')) {
+            def command = createKeystoreCommandWindows("${TASK_NUMBER}_task_${rootProject.name}")
+            def fileName = "generateReleaseKey.bat"
+            createCommandFileWindows(fileName, "${command}")
+            commandLine 'cmd', '/c', fileName
+        } else {
+            def command = createKeystoreCommand("${TASK_NUMBER}_task_${rootProject.name}")
+            commandLine 'sh', '-c', command
+        }
+    }
+}
+
+ext.createTestKeystore = {
+    task createTestKeystore(type: Exec) {
+        ignoreExitValue true
+
+        workingDir '..'
+
+        if (System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')) {
+            def command = createKeystoreCommandWindows(DEBUG_KEY_NAME)
+            def fileName = "generateDebugKey.bat"
+            createCommandFileWindows(fileName, "${command}")
+            commandLine 'cmd', '/c', fileName
+        } else {
+            def command = createKeystoreCommand(DEBUG_KEY_NAME)
+            commandLine 'sh', '-c', command
+        }
+    }
+}
+
+ext.getFile = { File fileP, name = null ->
+    try {
+        def filename = fileP.list(new FilenameFilter() {
+            @Override
+            boolean accept(File file1, String s) {
+                if (name != null) return s == name
+                else return file1.isDirectory() && !s.startsWith(".") && !file1.isHidden()
+            }
+        })[0]
+        return file(fileP.getPath() + "\\" + filename)
+    } catch (Exception e) {
+        println(e.toString())
+        return null
+    }
+}
+
+ext.stripExtension = { filename -> return filename.split("\\.")[0] }
+
+def renameAPK(variant, defaultConfig, buildType) {
+    variant.outputs.all { output ->
+        outputFileName = "A_v${defaultConfig.versionName}_${TASK_NUMBER}_${variant.applicationId}_${buildType}.apk"
+    }
+}
+
+def renameAAR(variant, defaultConfig, buildType) {
+    variant.outputs.all { output ->
+        if (variant.buildType.name == "release") {
+            println("outputFileName: $outputFileName")
+            outputFileName = "${variant.applicationId}_${buildType}_${defaultConfig.versionName}.aar"
+            println("outputFileName after rename: $outputFileName")
+        }
+    }
+}
+
+def generatorString(alphabet, n) {
+    new Random().with {
+        (1..n).collect { alphabet[nextInt(alphabet.length())] }.join()
+    }
+}
+
+def randomInt(from, to) {
+    new Random().nextInt(to - from) + from
+}
+
+def getAlphabet() {
+    return (('A'..'Z') + ('a'..'z')).join().toString()
+}
+//::::::::::::::::::::::::::::::::::::::::::::::::: METHODS :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
